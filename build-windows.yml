@@ -1,0 +1,66 @@
+name: Build StreamForge for OBS 30.0.2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths: [ 'src/**', 'data/**', 'CMakeLists.txt', 'README.md', 'ROADMAP.md', '.github/workflows/**' ]
+  pull_request:
+    paths: [ 'src/**', 'data/**', 'CMakeLists.txt', 'README.md', 'ROADMAP.md', '.github/workflows/**' ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout StreamForge
+        uses: actions/checkout@v4
+        with:
+          path: streamforge
+
+      - name: Checkout OBS Studio 30.0.2
+        uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-studio
+          ref: 30.0.2
+          submodules: recursive
+          path: obs-studio
+
+      - name: Register StreamForge in OBS build
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse streamforge obs-studio/plugins/streamforge
+          $cmake = 'obs-studio/plugins/CMakeLists.txt'
+          $content = Get-Content $cmake -Raw
+          if ($content -notmatch 'add_subdirectory\(streamforge\)') {
+            $content = $content -replace '(?m)^  return\(\)\s*$', "  add_subdirectory(streamforge)`r`n  return()"
+            Set-Content -Path $cmake -Value $content -NoNewline
+          }
+
+      - name: Configure OBS and StreamForge
+        working-directory: obs-studio
+        run: cmake --preset windows-x64 -DENABLE_BROWSER=ON -DENABLE_VLC=OFF -DENABLE_SCRIPTING=OFF
+
+      - name: Build StreamForge module
+        working-directory: obs-studio
+        run: cmake --build build_x64 --config RelWithDebInfo --target streamforge --parallel 4
+
+      - name: Collect plugin binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/bin/64bit | Out-Null
+          $dll = Get-ChildItem obs-studio/build_x64 -Recurse -Filter streamforge.dll | Select-Object -First 1
+          if (-not $dll) { throw 'streamforge.dll was not produced' }
+          Copy-Item $dll.FullName dist/bin/64bit/streamforge.dll
+          New-Item -ItemType Directory -Force -Path dist/data/locale | Out-Null
+          Copy-Item streamforge/data/locale/en-US.ini dist/data/locale/en-US.ini
+          Compress-Archive -Path dist/* -DestinationPath StreamForge-OBS-30.0.2-Windows-x64.zip -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StreamForge-OBS-30.0.2-Windows-x64
+          path: StreamForge-OBS-30.0.2-Windows-x64.zip
+          if-no-files-found: error
